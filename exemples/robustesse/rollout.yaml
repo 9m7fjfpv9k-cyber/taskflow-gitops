@@ -45,6 +45,10 @@ spec:
       canaryService: taskflow-canary
       steps:
         - setWeight: 25
+        # Laisser au service taskflow-canary le temps de basculer vers les nouveaux pods
+        # (Argo Rollouts attend qu'un pod canary soit prêt) avant de lancer le test.
+        - pause:
+            duration: 20s
         - analysis:
             templates:
               - templateName: robustesse-k6

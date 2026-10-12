@@ -65,8 +65,11 @@ kubectl -n argocd patch configmap argocd-cm --type merge -p '{"data":{"timeout.r
 
 step "Argo Rollouts ${ROLLOUTS_VERSION}"
 kubectl create namespace argo-rollouts --dry-run=client -o yaml | kubectl apply -f - >/dev/null
-kubectl apply -n argo-rollouts \
+kubectl apply -n argo-rollouts --server-side --force-conflicts \
   -f "https://github.com/argoproj/argo-rollouts/releases/download/${ROLLOUTS_VERSION}/install.yaml" >/dev/null
+# Sans les CRD, Argo CD refuse tout Rollout : on vérifie qu'elles existent.
+kubectl wait --for=condition=Established --timeout=120s \
+  crd/rollouts.argoproj.io crd/analysistemplates.argoproj.io crd/analysisruns.argoproj.io >/dev/null
 
 step "Attente du démarrage (quelques minutes la première fois)"
 kubectl -n argocd rollout restart statefulset/argocd-application-controller >/dev/null
