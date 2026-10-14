@@ -8,8 +8,8 @@ metadata:
 spec:
   project: default
   source:
-    repoURL: https://github.com/VOTRE-PSEUDO/taskflow-gitops.git
-    targetRevision: main
+    repoURL: https://github.com/mateplo/taskflow-gitops.git
+    targetRevision: main_sabri
     path: apps/taskflow
   destination:
     server: https://kubernetes.default.svc
