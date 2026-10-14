@@ -42,4 +42,5 @@ Il peut être relancé sans risque.
 ## Équipe
 
 <!-- Noms du binôme -->
-- À compléter
+- Matteo MENCUCCINI
+- Sabri ABID
