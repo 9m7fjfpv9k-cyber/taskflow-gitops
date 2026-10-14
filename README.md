@@ -38,7 +38,7 @@ Il peut être relancé sans risque.
 ## Images disponibles
 
 `ghcr.io/9m7fjfpv9k-cyber/taskflow` en versions `1.0.0`, `1.1.0`, `2.0.0`, `2.1.0` et `2.2.0`.
-
+#changement v2
 ## Équipe
 
 <!-- Noms du binôme -->
