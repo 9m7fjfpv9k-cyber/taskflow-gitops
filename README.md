@@ -99,3 +99,8 @@ Comme nous pouvons le voir, le rollout est instantané, car la nouvelle version 
 $ ./scripts/observe.sh
      40 version=1.1.0 http=200
 ```
+
+
+### Argo Rollouts : Canary
+
+Pour le canary on peut voir 
