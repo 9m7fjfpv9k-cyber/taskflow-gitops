@@ -21,19 +21,19 @@ Il peut être relancé sans risque.
 
 ## Structure
 
-| Chemin | Rôle |
-| --- | --- |
-| `apps/taskflow/` | Les manifests surveillés par Argo CD |
-| `argocd/application.yaml` | Déclare l'application dans Argo CD |
-| `exemples/bluegreen/` | Manifests pour le déploiement Blue-Green |
-| `exemples/canary/` | Manifests pour le déploiement Canary |
-| `exemples/robustesse/` | Canary avec test de charge k6 automatique, modèle de postmortem |
-| `exemples/ci/` | Pipelines de la mini-PSSI (GitHub Actions et GitLab CI) |
-| `policies/` | Mini-PSSI et règles Rego vérifiées par conftest |
-| `scripts/install.sh` | Installation de l'environnement |
-| `scripts/argocd-ui.sh` | Ouvre l'interface d'Argo CD |
-| `scripts/observe.sh` | Montre quelle version répond, et avec quel code HTTP |
-| `scripts/charge.sh` | Lance à la main le test de charge k6 contre un service |
+| Chemin                    | Rôle                                                            |
+| ------------------------- | --------------------------------------------------------------- |
+| `apps/taskflow/`          | Les manifests surveillés par Argo CD                            |
+| `argocd/application.yaml` | Déclare l'application dans Argo CD                              |
+| `exemples/bluegreen/`     | Manifests pour le déploiement Blue-Green                        |
+| `exemples/canary/`        | Manifests pour le déploiement Canary                            |
+| `exemples/robustesse/`    | Canary avec test de charge k6 automatique, modèle de postmortem |
+| `exemples/ci/`            | Pipelines de la mini-PSSI (GitHub Actions et GitLab CI)         |
+| `policies/`               | Mini-PSSI et règles Rego vérifiées par conftest                 |
+| `scripts/install.sh`      | Installation de l'environnement                                 |
+| `scripts/argocd-ui.sh`    | Ouvre l'interface d'Argo CD                                     |
+| `scripts/observe.sh`      | Montre quelle version répond, et avec quel code HTTP            |
+| `scripts/charge.sh`       | Lance à la main le test de charge k6 contre un service          |
 
 ## Images disponibles
 
@@ -42,6 +42,213 @@ Il peut être relancé sans risque.
 ## Équipe
 
 <!-- Noms du binôme -->
+
 - Hafsa HYVERNAT
 - Lorenzo SPERISEN
 - Lina Mebouga Messia
+
+## Journal des déploiements — Lab GitOps TaskFlow
+
+**Date :** 14 octobre 2026  
+**Dépôt :** [lorenzosperisen/taskflow-gitops](https://github.com/lorenzosperisen/taskflow-gitops)  
+**Environnement :** Docker Desktop, WSL2 Ubuntu, Kubernetes kind, Argo CD v3.5.3  
+**Branche surveillée :** `main`  
+**Application :** `taskflow`  
+**Namespace :** `taskflow`
+
+### 1. Objectif du lab
+
+L'objectif est de mettre en pratique une démarche GitOps en utilisant GitHub, Kubernetes et Argo CD
+
+Nous devons démontrer qu'il est possible de:
+
+- Déployer une nouvelle version de TaskFlow à partir d'une Pull Request
+- Observer le délai entre la fusion de la PR et le déploiement
+- Provoquer volontairement des dérives dans Kubernetes
+- Vérifier qu'Argo CD restaure automatiquement l'état défini dans Git
+- Effectuer un retour arrière contrôlé avec `git revert`
+
+### 2. Installation et état initial
+
+Nous avons créé un fork du dépôt `taskflow-gitops` et configuré une règle de protection sur la branche `main`avec une approbation obligatoire avant fusion.
+
+Chaque membre du groupe utilise son propre cluster Kubernetes local.
+
+L'installation a été réalisée avec :
+
+```bash
+bash scripts/install.sh
+```
+
+Le contexte Kubernetes utilisé est :
+
+```text
+kind-cicd
+```
+
+L'application Argo CD a été configurée pour surveiller notre fork GitHub, sur la branche `main`, dans le dossier `apps/taskflow`.
+
+![Argo UI](images/argoui.png)
+
+La commande `bash scripts/observe.sh` a confirmé que l'application répondait correctement en version `1.0.0`.
+
+### 3. Déploiement de TaskFlow 2.0.0 par Pull Request
+
+Nous avons créé une branche `feat/taskflow-v2` pour modifier le fichier `apps/taskflow/deployment.yaml`.
+
+La modification consistait uniquement à remplacer l'image Docker :
+
+```diff
+- image: ghcr.io/9m7fjfpv9k-cyber/taskflow:1.0.0
++ image: ghcr.io/9m7fjfpv9k-cyber/taskflow:2.0.0
+```
+
+La modification a été enregistrée dans un commit, puis proposée dans la [Pull Request #1 — Deploy TaskFlow v2.0.0](https://github.com/lorenzosperisen/taskflow-gitops/pull/1).
+
+Après la fusion, Argo CD a détecté la nouvelle configuration et a effectué le déploiement automatiquement.
+
+**États observés :**
+
+```text
+Synced / Healthy
+OutOfSync / Healthy
+Synced / Progressing
+Synced / Healthy
+```
+
+**Résultat final :**
+
+![Résulat obtenu](images/observe1.png)
+
+La nouvelle version a été déployée sans utiliser `kubectl set image` pour effectuer le changement.
+
+### 4. Mesure du délai de déploiement
+
+L'heure de création du ReplicaSet a été récupérée avec :
+
+```bash
+kubectl -n taskflow get replicasets -l app=taskflow -o custom-columns='NAME:.metadata.name,CREATED:.metadata.creationTimestamp,READY:.status.readyReplicas,IMAGE:.spec.template.spec.containers[0].image'
+```
+
+**Interprétation :** environ 2 minutes et 42 secondes se sont écoulées entre l'heure de fusion affichée par GitHub et la création du ReplicaSet de la nouvelle version.
+![ReplicaSets TaskFlow 1.0.0 et 2.0.0](images/replicas.png)
+
+### 5. Test de dérive : nombre de réplicas
+
+L'état souhaité dans Git prévoyait 4 réplicas.
+
+Nous avons volontairement modifié Kubernetes :
+
+```bash
+kubectl -n taskflow scale deployment/taskflow --replicas=2
+```
+
+La commande a retourné :
+
+```text
+deployment.apps/taskflow scaled
+```
+
+Lors de la vérification suivante, le Deployment affichait :
+
+![Retour automatique à 4 réplicas après la dérive](images/scale-replica.png)
+![Retour automatique à 4 réplicas après la dérive](images/derive-replica.png)
+
+**Observation :** le cluster est revenu à 4 réplicas, conformément au fichier Git.
+
+Cette expérience illustre l'auto-réparation d'Argo CD grâce au paramètre `selfHeal: true`.
+
+### 6. Test de dérive : image Docker
+
+Alors que Git demandait la version `2.0.0`, nous avons tenté de remplacer manuellement l'image du Deployment par `1.0.0`.
+
+Commande exécutée :
+
+```bash
+kubectl -n taskflow set image deployment/taskflow taskflow=ghcr.io/9m7fjfpv9k-cyber/taskflow:1.0.0
+```
+
+Kubernetes a confirmé :
+
+```text
+deployment.apps/taskflow image updated
+```
+
+Nous avons ensuite vérifié l'image réellement déclarée dans le Deployment :
+
+```bash
+kubectl -n taskflow get deployment taskflow -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+```
+
+Résultat :
+
+![Modification manuelle de l'image Docker pour provoquer une dérive](images/derive.png)
+
+**Observation :** Argo CD a restauré la version `2.0.0` qui correspondait toujours à l'état souhaité dans Git.
+
+Les deux tests de dérive montrent qu'une modification manuelle de Kubernetes ne remplace pas durablement la configuration déclarée dans le dépôt.
+
+### 7. Retour arrière avec Git Revert
+
+Pour revenir à la version initiale, nous avons utilisé le bouton **Revert** de la PR #1 sur GitHub.
+
+Une nouvelle Pull Request a été créée :
+
+[Pull Request #3 — Revert "Deploy TaskFlow v2.0.0"](https://github.com/lorenzosperisen/taskflow-gitops/pull/3)
+
+La PR a été approuvée par `Hyvernat`, puis fusionnée dans `main`.
+
+Le changement inverse était :
+
+```diff
+- image: ghcr.io/9m7fjfpv9k-cyber/taskflow:2.0.0
++ image: ghcr.io/9m7fjfpv9k-cyber/taskflow:1.0.0
+```
+
+Immédiatement après la fusion, la version `2.0.0` était encore observée. Après le délai de réconciliation d'Argo CD et la mise à jour Kubernetes, la version `1.0.0` était de nouveau disponible.
+
+![Vérification du retour arrière vers TaskFlow 1.0.0](images/revert-validation.png)
+
+Le retour arrière a donc réussi sans modification manuelle du Deployment Kubernetes.
+
+### 8. Réponses aux questions du professeur
+
+**Question 1 — Push ou pull ?**
+
+Le modèle utilisé est **GitOps pull**.
+
+Les développeurs proposent leurs modifications sur GitHub à travers des Pull Requests
+
+**Question 2 — Qui a corrigé quoi ?**
+
+Les membres du groupe ont modifié et validé les configurations Git à travers des commits et des Pull Requests.
+
+Argo CD a corrigé automatiquement les dérives constatées dans Kubernetes :
+
+- Retour de 2 à 4 réplicas après `kubectl scale`.
+- Retour de l'image `1.0.0` à `2.0.0` après `kubectl set image`.
+
+Kubernetes a assuré l'exécution et le remplacement des pods.
+
+Lors du Revert le changement a été effectué dans Git puis Argo CD a appliqué la nouvelle configuration pour revenir à `1.0.0`.
+
+**Question 3 — Pourquoi `git revert` ?**
+
+`git revert` permet d'annuler les effets d'un commit précédent en créant un nouveau commit inverse sans supprimer l'historique
+
+Cette approche est adaptée au GitOps pour plusieurs raisons :
+
+- Elle conserve la traçabilité des modifications et des retours arrière
+- Elle permet une revue et une approbation par Pull Request
+- Elle respecte les règles de protection de la branche `main`
+- Elle permet à Argo CD de détecter et d'appliquer le retour arrière comme n'importe quel autre changement Git
+
+Contrairement à une modification manuelle avec `kubectl` le Revert met à jour la source de vérité.
+
+### 9. Conclusion
+
+Ce lab nous a permis de comprendre le fonctionnement d'un déploiement GitOps avec Argo CD.
+
+Nous avons réussi à déployer TaskFlow `2.0.0` à partir d'une PR, à observer la correction automatique de deux dérives Kubernetes puis à revenir à la version `1.0.0` grâce à une nouvelle PR de Revert.
+
+L'expérience montre que Git constitue la source de vérité de l'infrastructure déclarative tandis qu'Argo CD assure la réconciliation entre l'état souhaité et l'état réel du cluster
