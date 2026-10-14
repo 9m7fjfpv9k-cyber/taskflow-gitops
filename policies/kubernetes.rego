@@ -39,3 +39,21 @@ deny contains msg if {
 
 # PSSI-R4 : À VOUS. Le pod doit déclarer spec.template.spec.securityContext.runAsNonRoot: true.
 # Indice : écrivez une règle « pod_non_root if { ... } » puis « not pod_non_root » dans un deny.
+
+# PSSI-R3 : chaque conteneur a une limite mémoire.
+deny contains msg if {
+    some c in conteneurs
+    not c.resources.limits.memory
+    msg := sprintf("PSSI-R3 : le conteneur '%s' n'a pas de limite mémoire (resources.limits.memory)", [c.name])
+}
+
+# PSSI-R4 : le pod ne tourne jamais en root.
+pod_non_root if {
+    input.spec.template.spec.securityContext.runAsNonRoot == true
+}
+
+deny contains msg if {
+    charges_de_travail[input.kind]
+    not pod_non_root
+    msg := sprintf("PSSI-R4 : le pod de %s '%s' ne déclare pas securityContext.runAsNonRoot: true", [input.kind, input.metadata.name])
+}
