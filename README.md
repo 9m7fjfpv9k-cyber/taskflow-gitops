@@ -100,7 +100,47 @@ $ ./scripts/observe.sh
      40 version=1.1.0 http=200
 ```
 
-
 ### Argo Rollouts : Canary
 
-Pour le canary on peut voir 
+Pour le Canary, on peut voir qu'après la synchronisation par Argo CD, on bloque à 25 % de pods en nouvelle version (soit 1 pod sur 4 dans notre cas), car l'étape `pause: {}` n'a pas de durée et attend un promote manuel.
+
+![Canary à 25 % : 1 pod en 2.0.0, 3 pods en 1.0.0, en pause](screenshots/canary-25.png)
+
+Avec le script, on peut voir que la charge bascule bien en fonction de la proportion de pods en 1.0.0 et en 2.0.0 (la répartition est approximative, car les requêtes sont distribuées aléatoirement entre les pods) :
+
+```console
+$ ./scripts/observe.sh
+     33 version=1.0.0 http=200
+      7 version=2.0.0 http=200
+```
+
+En lançant la suite (Promote), nous allons d'abord passer à 50 % avec une pause de 60 secondes, puis à 75 % avec une pause de 30 secondes, et enfin à 100 % en nouvelle version. Tout cela peut être interrompu avec Abort pour revenir en 1.0.0, ou même PromoteFull pour tout passer en 2.0.0 d'un coup. Dans notre cas, nous allons laisser le cheminement se faire et prendre des captures des différents états.
+
+#### 50 %
+
+![Canary à 50 % : 2 pods en 2.0.0, 2 pods en 1.0.0, pause de 60 s](screenshots/canary-50.png)
+
+```console
+$ ./scripts/observe.sh
+     18 version=1.0.0 http=200
+     22 version=2.0.0 http=200
+```
+
+#### 75 %
+
+![Canary à 75 % : 3 pods en 2.0.0, 1 pod en 1.0.0, pause de 30 s](screenshots/canary-75.png)
+
+```console
+$ ./scripts/observe.sh
+      6 version=1.0.0 http=200
+     34 version=2.0.0 http=200
+```
+
+#### 100 %
+
+![Canary terminé : 4 pods en 2.0.0, la révision 1.0.0 n'a plus de pods](screenshots/canary-100.png)
+
+```console
+$ ./scripts/observe.sh
+     40 version=2.0.0 http=200
+```
