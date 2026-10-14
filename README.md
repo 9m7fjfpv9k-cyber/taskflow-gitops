@@ -46,7 +46,7 @@ Il peut être relancé sans risque.
 
 ## Journal des déploiements (J2, 14/10/2026)
 
-Nous avons fait ce lab en binôme : Hamza proposait les changements, Ezzat relisait et approuvait chaque PR. Les heures ci-dessous sont en UTC (en France, ajoutez 2 h). Nous les avons relevées après coup dans l'historique GitHub et dans celui d'Argo CD, pour ne pas dépendre de notre mémoire.
+Nous avons fait ce lab en binôme : Chaque PR était proposée par l'un de nous et relue puis approuvée par l'autre. Les heures ci-dessous sont en UTC (en France, ajoutez 2 h). Nous les avons relevées après coup dans l'historique GitHub et dans celui d'Argo CD, pour ne pas dépendre de notre mémoire.
 
 ### Comment ça s'est passé
 
@@ -104,3 +104,41 @@ Quelques précisions : les PR #3 (premier essai de revert de la #2) et #7 (premi
 ### Ce qu'on retient (y compris notre erreur)
 
 Le revert de la PR #6 avait visé la mauvaise PR : au lieu d'annuler le changement d'image, il avait annulé la correction du `repoURL`. Le cluster ne s'en est pas ressenti, car l'application avait déjà été déclarée avec le bon dépôt, mais `main` et le cluster ne disaient plus la même chose. Sans l'historique des PR et des commits, cet écart serait passé inaperçu. Nous l'avons corrigé comme le reste, par un revert du revert (PR #8), relu et approuvé par Ezzat vers 09:43.
+
+## Lab de l'après-midi, partie A : Blue-Green (14/10/2026)
+
+Même principe que le matin : tout changement passe par une PR, sauf la promotion, qui est une action sur le Rollout.
+
+### Comment ça s'est passé
+
+On a d'abord remplacé le `Deployment` par un `Rollout` Argo Rollouts en Blue-Green. La PR #13, proposée par Ezzat et approuvée par Hamza, a supprimé `deployment.yaml` et ajouté `rollout.yaml`, `service.yaml` (le service actif `taskflow`) et `service-preview.yaml` (`taskflow-preview`), avec `autoPromotionEnabled: false`. Elle a été mergée vers 11:50 et déployée par Argo CD vers 11:52. À ce stade, rien ne change pour les utilisateurs : l'image est toujours la 1.0.0, avec 4 pods.
+
+Ensuite, la PR #14 (Hamza, approuvée par Ezzat, mergée vers 12:33) a passé l'image en 1.1.0. Argo CD l'a déployée vers 12:34, soit environ une minute et demie après le merge. Le Rollout s'est alors mis en pause (`Paused`, message `BlueGreenPause`) : la 1.1.0 tournait sur 4 nouveaux pods, mais la production n'était pas encore touchée. On avait **8 pods** pour une demande de 4, le prix du Blue-Green.
+
+On a vérifié les deux côtés avec `observe.sh`. Le service `taskflow` répondait 40 fois sur 40 en `1.0.0`, et `taskflow-preview` 40 fois sur 40 en `1.1.0`. On pouvait donc tester la nouvelle version à côté, sans exposer personne.
+
+Enfin, `kubectl argo rollouts promote taskflow -n taskflow` (vers 12:41, heure approximative) a fait pointer `taskflow` vers la 1.1.0. L'ancienne révision est restée 30 secondes en vie (`scaleDownDelaySeconds`, la fenêtre de retour instantané), puis est passée à `ScaledDown` : on est revenus à 4 pods, tous en 1.1.0. `observe.sh` a confirmé 40 réponses sur 40 en `1.1.0`.
+
+| Merge (UTC) | Ce qu'on a fait | Déployé (UTC) | Constat |
+| --- | --- | --- | --- |
+| ~11:50 | PR #13 : `Deployment` → `Rollout` Blue-Green (+ `service-preview`) | ~11:52 | 4 pods en 1.0.0, rien ne change pour les utilisateurs |
+| ~12:33 | PR #14 : image 1.0.0 → 1.1.0 | ~12:34 | `Paused`, 8 pods ; `taskflow` répond 1.0.0, `taskflow-preview` répond 1.1.0 |
+| pas de PR | `promote` sur le Rollout (action sur le cluster) | ~12:41 | bascule, puis ancienne révision à 0 pod après ~30 s ; 4 pods en 1.1.0 |
+
+### Preuves
+
+- Le `Deployment` devient un `Rollout` (diff Git) : ![diff](docs/preuve/11-bluegreen-diff-rollout.png)
+- PR #13 mergée : ![pr13](docs/preuve/12-bluegreen-pr13.png)
+- La 1.1.0 démarre à côté : `Paused`, 8 pods : ![paused](docs/preuve/13-bluegreen-paused-8-pods.png)
+- `taskflow` en 1.0.0, `taskflow-preview` en 1.1.0 : ![observe](docs/preuve/14-bluegreen-observe-active-preview.png)
+- Juste avant la promotion : ![avant](docs/preuve/15-bluegreen-avant-promote.png)
+- Après `promote` : une seule révision active, l'ancienne `ScaledDown` : ![apres](docs/preuve/16-bluegreen-apres-promote.png)
+- Après `promote`, `observe.sh` en 1.1.0 : ![observe apres](docs/preuve/17-bluegreen-observe-1.1.0.png)
+
+### Ce qu'on a observé
+
+- **Aucun utilisateur exposé avant la bascule** : la nouvelle version a pu être testée sur `taskflow-preview` pendant que la production restait en 1.0.0.
+- **Coût en ressources** : jusqu'à 8 pods au lieu de 4 pendant la transition.
+- **Bascule d'un coup** : à la promotion, 100 % du trafic passe en 1.1.0 en une fois, pas progressivement.
+- **Retour arrière** : instantané pendant les ~30 secondes de `scaleDownDelaySeconds`, puisque les anciens pods sont encore là. Une fois la révision 1.0.0 à 0 pod, un retour demande de recréer des pods : ce n'est plus instantané.
+- **Git et cluster** : `promote` n'est pas tracé dans Git. Git disait déjà « 1.1.0 » depuis la PR #14, et c'est le cluster qui a choisi le moment de la bascule. Argo CD n'a rien défait, car il n'y a pas d'écart avec Git.
