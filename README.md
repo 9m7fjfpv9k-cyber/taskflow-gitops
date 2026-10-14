@@ -142,3 +142,63 @@ Enfin, `kubectl argo rollouts promote taskflow -n taskflow` (vers 12:41, heure a
 - **Bascule d'un coup** : à la promotion, 100 % du trafic passe en 1.1.0 en une fois, pas progressivement.
 - **Retour arrière** : instantané pendant les ~30 secondes de `scaleDownDelaySeconds`, puisque les anciens pods sont encore là. Une fois la révision 1.0.0 à 0 pod, un retour demande de recréer des pods : ce n'est plus instantané.
 - **Git et cluster** : `promote` n'est pas tracé dans Git. Git disait déjà « 1.1.0 » depuis la PR #14, et c'est le cluster qui a choisi le moment de la bascule. Argo CD n'a rien défait, car il n'y a pas d'écart avec Git.
+
+## Lab de l'après-midi, partie B : Canary (14/10/2026)
+
+### Comment ça s'est passé
+
+On a changé de stratégie en gardant la même version : la PR #16 a remplacé le contenu de `rollout.yaml` par celui de `exemples/canary/rollout.yaml` (image toujours en 1.1.0), puis la PR #17 a supprimé `service-preview.yaml`, devenu inutile (on l'avait d'abord oublié dans la #16, la capture le montre). Argo CD a déployé en moins d'une minute à chaque fois. Le Rollout est devenu `Strategy: Canary`, `Healthy`, 4 pods en 1.1.0.
+
+Ensuite, la PR #18 a passé l'image en 2.0.0. Le Rollout est monté à **25 %**, soit 1 pod sur 4 en 2.0.0, puis s'est mis en pause : il attend notre `promote`. Avec `observe.sh` on a compté 8 réponses sur 40 en 2.0.0 (20 %), ce qui colle avec 1 pod sur 4. Sans ingress ni service mesh, le Canary ne peut pas viser un pourcentage précis, il suit juste le nombre de pods. Un `promote` (vers 13:43) a ensuite fait défiler les paliers 50 %, 75 % puis 100 %, avec les pauses prévues de 60 s et 30 s, et a fini en `Healthy`, 4 pods en 2.0.0, `40 version=2.0.0 http=200`. Nous étions revenus à 4 pods à tout moment : pas de pods en plus comme en Blue-Green.
+
+Puis la PR #19 a passé l'image en **2.1.0**, la version qui plante. Au palier de 25 %, le pod canary était `Running` et `ready 1/1` : les probes étaient vertes. Pourtant, `observe.sh` a compté, sur 40 requêtes, 31 en 2.0.0 sans souci, 5 en 2.1.0 correctes, et **4 en erreur** (`version=aucune http=500`). Sur les 9 requêtes tombées sur le canary, 4 ont échoué. Seuls les utilisateurs touchés par ce pod ont vu l'erreur, soit 4 requêtes sur 40.
+
+On a fait un `abort` (vers 14:02). Le Rollout est passé `Degraded` (`RolloutAborted`), le canary est revenu à 0 pod, les 4 pods en 2.0.0 ont repris tout le trafic, et `observe.sh` est revenu à 40 réponses en 2.0.0. Mais `rollout.yaml` de `main` disait toujours 2.1.0, et Argo CD affichait `Synced`, car pour lui rien ne s'écartait de Git. On a donc corrigé Git par une PR : un revert de la #19 (PR #21, mergée vers 14:06, la #20 avait été fermée sans merge). Après la synchronisation, le Rollout est repassé `Healthy`, Argo CD `Synced` / `Healthy`, tout en 2.0.0.
+
+| Merge (UTC) | Ce qu'on a fait | Déployé | Constat |
+| --- | --- | --- | --- |
+| ~13:05 | PR #16 : `Rollout` Blue-Green → Canary (image 1.1.0) | < 1 min | `Canary`, `Healthy`, 4 pods 1.1.0 |
+| ~13:15 | PR #17 : suppression de `service-preview.yaml` | < 1 min | service retiré du cluster (`prune`) |
+| ~13:37 | PR #18 : image 1.1.0 → 2.0.0 | < 1 min | 25 %, `Paused`, 8/40 réponses en 2.0.0 |
+| pas de PR | `promote` (~13:43) | n/a | paliers 50 %, 75 %, 100 % ; `Healthy`, 40/40 en 2.0.0 |
+| ~13:53 | PR #19 : image 2.0.0 → 2.1.0 (défectueuse) | < 1 min | 25 %, pod `Ready`, mais 4 réponses `http=500` sur 40 |
+| pas de PR | `abort` (~14:02) | n/a | Rollout `Degraded`, retour 40/40 en 2.0.0 ; Git toujours en 2.1.0 |
+| ~14:06 | PR #21 : revert de la PR #19 | ~1 min 30 | Rollout `Healthy`, Argo CD `Synced` / `Healthy`, Git = cluster = 2.0.0 |
+
+### Preuves
+
+- Canary après la PR #16, et services : ![canary](docs/preuve/18-canary-rollout-et-services.png)
+- PR #16 mergée : ![pr16](docs/preuve/19-canary-pr16.png)
+- État de départ du Canary, 40/40 en 1.1.0 : ![etat initial](docs/preuve/20-canary-etat-initial-1.1.0.png)
+- 25 %, `Paused`, 1 pod sur 4 en 2.0.0 : ![25](docs/preuve/21-canary-25pct-paused.png)
+- Après `promote`, en cours de palier : ![promote](docs/preuve/22-canary-promote-palier.png)
+- Palier à 75 % : ![75](docs/preuve/23-canary-75pct.png)
+- 100 %, `Healthy`, 2.0.0 stable : ![100](docs/preuve/24-canary-100pct-2.0.0.png)
+- La 2.1.0 : pod `Ready` mais 4 réponses en `http=500` : ![erreurs](docs/preuve/25-canary-2.1.0-erreurs-http.png)
+- Après `abort` : Rollout `Degraded`, Argo CD `Synced` : ![abort](docs/preuve/26-canary-abort-degraded.png)
+- Argo CD `Synced` / `Healthy` juste avant la synchro du revert : ![argocd](docs/preuve/27-canary-abort-argocd-healthy.png)
+- Après la PR de revert : tout est `Healthy` en 2.0.0 : ![revert](docs/preuve/28-canary-revert-healthy.png)
+
+### Question de vérification : un `abort` pendant un canary, que montrent le Rollout, Argo CD et Git, et que faut-il faire ensuite ?
+
+- **Le Rollout** passe `Degraded` (`RolloutAborted`) : le canary est ramené à 0 pod et la version stable reprend tout le trafic.
+- **Argo CD** reste `Synced`, car l'`abort` ne change pas ce que Git décrit : le cluster correspond toujours à Git. Sa santé a d'abord été `Degraded` (reprise de celle du Rollout) puis `Healthy` quand nous avons relancé la commande.
+- **Git** dit toujours la version défectueuse (2.1.0). C'est le point à retenir : l'`abort` est une action sur le cluster, pas une décision de Git.
+- **Ensuite**, il faut corriger Git par une PR : un revert de la PR qui a introduit la 2.1.0. Sans cela, Git continue de réclamer une version qu'on a rejetée, et le Rollout reste `Degraded`.
+
+### Blue-Green ou Canary pour TaskFlow ?
+
+Notre choix serait le **Canary**, pour ces raisons.
+
+**Le risque.** Le défaut de la 2.1.0 était invisible pour les probes : le pod était `Ready`, et seules de vraies requêtes ont montré les erreurs 500. En Blue-Green, on aurait pu tester sur `taskflow-preview`, mais cela suppose de penser à tester ce cas précis. Si ce test est oublié, la bascule envoie 100 % des utilisateurs sur le bug d'un coup. En Canary, le même bug n'a touché que 4 requêtes sur 40 avant qu'on arrête.
+
+**Le coût.** Le Blue-Green a demandé 8 pods pour une application qui en veut 4, soit le double de ressources pendant toute la transition. Le Canary est resté à 4 pods. Pour une petite application comme TaskFlow, doubler les ressources à chaque déploiement est difficile à justifier.
+
+**Le retour arrière.** Il est instantané en Blue-Green, mais seulement pendant les 30 secondes de `scaleDownDelaySeconds` : ensuite les anciens pods ont disparu. En Canary, l'`abort` a rétabli la situation en quelques secondes, avec peu de dégâts.
+
+**Les limites du Canary** : ici, sans ingress ni service mesh, le pourcentage dépend du nombre de pods (25 % = 1 pod sur 4), il n'est pas précis. Et c'est nous qui avons dû repérer les erreurs et faire l'`abort` à la main : un système qui détecte et annule tout seul serait préférable. Le Blue-Green resterait un bon choix si on voulait une bascule nette et testée d'avance, par exemple quand deux versions ne peuvent pas cohabiter.
+
+### Ce qu'on retient du lab
+
+Un déploiement progressif limite les dégâts d'un bug mais ne les empêche pas, et les probes ne remplacent pas une mesure côté utilisateurs. Dans les deux cas, les actions faites sur le cluster (`promote`, `abort`) ne sont pas tracées dans Git : c'est la PR qui remet Git et la réalité d'accord.
+
