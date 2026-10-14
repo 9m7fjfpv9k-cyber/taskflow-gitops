@@ -3,12 +3,12 @@
 apiVersion: argoproj.io/v1alpha1
 kind: Application
 metadata:
-  name: taskflow
+  name: taskflow-ray
   namespace: argocd
 spec:
   project: default
   source:
-    repoURL: https://github.com/VOTRE-PSEUDO/taskflow-gitops.git
+    repoURL: https://github.com/ARAFAT-Moustaph/taskflow-gitops.git
     targetRevision: main
     path: apps/taskflow
   destination:
