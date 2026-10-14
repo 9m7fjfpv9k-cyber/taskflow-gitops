@@ -144,3 +144,43 @@ $ ./scripts/observe.sh
 $ ./scripts/observe.sh
      40 version=2.0.0 http=200
 ```
+
+### Argo Rollouts : Abort d'un Canary
+
+On va maintenant faire un Abort sur un Rollout Canary, avec le passage de la 2.0.0 à la 2.1.0.
+
+Nous pouvons voir que le Rollout marche correctement (le pod en 2.1.0 est prêt, et le Rollout est en pause à 25 %) :
+
+![Canary 2.1.0 à 25 % : 1 pod en 2.1.0, 3 pods en 2.0.0](screenshots/canary-abort-avant.png)
+
+Regardons la charge de plus près :
+
+```console
+$ ./scripts/observe.sh
+     29 version=2.0.0 http=200
+      7 version=2.1.0 http=200
+      4 version=aucune http=500
+```
+
+Une erreur est présente sur la nouvelle version : environ 1 requête sur 3 envoyée à la 2.1.0 renvoie une erreur 500 (4 sur 11). Nous allons donc faire un Abort du Rollout :
+
+![Après l'Abort : retour à 0 %, plus aucun pod en 2.1.0, 4 pods en 2.0.0](screenshots/canary-abort-apres.png)
+
+Argo CD affiche donc l'application en Degraded : le cluster tourne en 2.0.0, alors que le repo GitHub demande toujours la 2.1.0.
+
+![Argo CD : application Synced mais Degraded après l'Abort](screenshots/argocd-degraded-apres-abort.png)
+
+Pour corriger cela, nous allons faire un revert de la PR pour revenir à l'ancienne version.
+
+![Argo CD : application Synced et Healthy après le revert (PR #18)](screenshots/argocd-healthy-apres-revert.png)
+
+Tout est bien resynchronisé : l'application repasse en Healthy, car la version demandée dans le repo (2.0.0) correspond de nouveau à celle qui tourne sur le cluster.
+
+### Blue-Green ou Canary ?
+
+En termes de risque et de coût, l'upgrade Blue-Green est toujours préférable si l'on a les moyens et les ressources sur le cluster, car il est plus sûr. Sinon, le Canary, quand il est possible, est plus simple à maintenir et permet d'avoir des retours utilisateurs pertinents (qui peuvent différer des retours techniques qu'on aurait avec le Blue-Green).
+
+Deux nuances :
+
+- **Coût du Blue-Green** : pendant le déploiement, les deux versions tournent en entier côte à côte, ce qui double les ressources nécessaires (8 pods au lieu de 4 dans notre cas).
+- **Précision du Canary** : ici, la répartition du trafic se fait au nombre de pods (25 % = 1 pod sur 4), donc elle reste approximative. Pour piloter finement le pourcentage de trafic, indépendamment du nombre de pods, il faut ajouter un ingress ou un service mesh, ce qui complique la mise en place.
