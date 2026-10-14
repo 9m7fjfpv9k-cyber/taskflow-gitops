@@ -42,4 +42,6 @@ Il peut être relancé sans risque.
 ## Équipe
 
 <!-- Noms du binôme -->
-- À compléter
+- Hafsa HYVERNAT
+- Lorenzo SPERISEN
+- Lina Mebouga Messia
