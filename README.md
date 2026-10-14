@@ -51,6 +51,4 @@ Naoile et Doria
 
 3) Sur la branch feat/taskflow-v2, nous avons modifier la version de l'image Docker dasn apps/taskflow/deployment.yaml
    ![Déploiement Taskflow v2.0.0](images/v-2.png)
-6) Apres un revert, on reviens à la version 1.0.0
-
  
