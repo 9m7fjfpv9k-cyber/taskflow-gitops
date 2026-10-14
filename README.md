@@ -42,4 +42,12 @@ Il peut être relancé sans risque.
 ## Équipe
 
 <!-- Noms du binôme -->
-- À compléter
+Naoile et Doria
+
+## LAB : "Déployer par PR, provoquer une dérive, revenir en arrière"
+
+2) L'application apparaît dans ui Argo cd avec les status Synced et Healthy
+ ![Déploiement Taskflow v2.0.0](images/sync-health.png)
+
+3) Sur la branch feat/taskflow-v2, nous avons modifier la version de l'image Docker dasn apps/taskflow/deployment.yaml
+   ![Déploiement Taskflow v2.0.0](images/v-2.png)
