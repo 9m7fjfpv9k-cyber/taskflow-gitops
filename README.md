@@ -44,3 +44,12 @@ Il peut être relancé sans risque.
 <!-- Noms du binôme -->
 - Matteo MENCUCCINI
 - Sabri ABID
+
+### Livrable
+
+![alt text](image-1.png)
+![alt text](image-2.png)
+
+Tous les déploiement viennnent d'un pull car c'est argocd qui va regarder la source de vérité (repo github) et ordonner le déploiement/modification des ressources sur le cluster kube.
+
+Le git revert sert à annuler les changements d'un commit existant et donc de revenir en arrière. Cela permet à argocd d'annuler des changements fait (venant du repo ayant été modifié) via le fait qu'il soit revenu X commit en arrière (d'un point de vue du code. Du point de vue de l'historique on a un commit en plus) 
