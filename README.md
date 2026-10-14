@@ -39,7 +39,29 @@ Il peut être relancé sans risque.
 
 `ghcr.io/9m7fjfpv9k-cyber/taskflow` en versions `1.0.0`, `1.1.0`, `2.0.0`, `2.1.0` et `2.2.0`.
 
-## Compte rendu du lab — déployer par PR, provoquer une dérive, revenir en arrière
+## Lab du matin — GitOps par PR, dérive et retour arrière
+
+Cette première séance porte sur le flux GitOps : proposer les changements par
+Pull Request, observer la réconciliation par Argo CD et revenir à l'état voulu
+après une dérive.
+
+### Captures complémentaires
+
+Les captures ci-dessous complètent le compte rendu et documentent les changements de synchronisation et les événements du pod `taskflow`.
+
+![Synchronisation Argo CD réussie](captures/argocd-sync-operation.png)
+
+La synchronisation a bien été validée par Argo CD : la phase est `Succeeded`, la révision est indiquée et la ressource est redevenue `Synced`/`Healthy`.
+
+![Événements du pod taskflow](captures/taskflow-pod-events.png)
+
+Cette capture montre les événements du pod après la mise à jour : création du conteneur, démarrage puis vérification de l'état du pod. Elle confirme que Kubernetes a bien tiré et démarré l'image demandée.
+
+![Readiness probe du pod taskflow](captures/taskflow-pod-events-readiness.png)
+
+Cette vue met en évidence le point de contrôle de disponibilité (`readiness probe`) : le pod a d'abord été jugé non sain avant d'être complètement prêt à servir les requêtes, ce qui est normal lors d'un redémarrage ou d'une mise à jour.
+
+### Compte rendu — déployer par PR, provoquer une dérive, revenir en arrière
 
 Le lab illustre un flux GitOps : Git contient l'état souhaité, et Argo CD le
 réconcilie avec Kubernetes. Les captures ci-dessous sont les éléments de preuve
@@ -47,7 +69,7 @@ disponibles dans le dépôt. Elles montrent la configuration de branche, l'état
 de l'application et l'observation de la version initiale ; elles ne documentent
 pas à elles seules les PR de mise à jour, de revert ou de suppression.
 
-### 1. Fork, binôme et règles de branche
+#### 1. Fork, binôme et règles de branche
 
 Forkez le dépôt, invitez votre binôme parmi les collaborateurs, puis configurez
 un ruleset ciblant `main` dans **Settings > Rules > Rulesets**. Le ruleset doit
@@ -59,7 +81,7 @@ pas les options sélectionnées ni l'invitation du binôme.
 
 ![Ruleset GitHub ciblant une branche](captures/github-ruleset-main.png)
 
-### 2. Déclarer le dépôt dans Argo CD
+#### 2. Déclarer le dépôt dans Argo CD
 
 Vérifiez que `repoURL` dans [`argocd/application.yaml`](argocd/application.yaml)
 pointe vers le fork utilisé par votre binôme. Dans ce dépôt, l'URL est déjà
@@ -75,7 +97,7 @@ kubectl apply -f argocd/application.yaml
 L'Application suit `main` et le répertoire `apps/taskflow`. La synchronisation
 automatique y est activée.
 
-### 3. Vérifier l'état initial et la version servie
+#### 3. Vérifier l'état initial et la version servie
 
 Dans Argo CD, l'application `taskflow` doit afficher **Healthy** et **Synced**.
 Lancez ensuite le script d'observation :
@@ -94,7 +116,7 @@ confirme l'état initial observé.
 
 ![Observation de 40 réponses en version 1.0.0](captures/observe-version-1.0.0.png)
 
-### 4. Déployer la version 2.0.0 par Pull Request
+#### 4. Déployer la version 2.0.0 par Pull Request
 
 Dans une branche de travail, modifiez l'image du Deployment dans
 [`apps/taskflow/deployment.yaml`](apps/taskflow/deployment.yaml), de `1.0.0` à
@@ -109,7 +131,7 @@ délai correspond à la différence entre ces deux instants. Aucune capture four
 ne montre cette PR ni ses horodatages : le délai réel reste donc à renseigner
 dans le journal de déploiement.
 
-### 5. Provoquer une dérive et observer l'auto-réconciliation
+#### 5. Provoquer une dérive et observer l'auto-réconciliation
 
 Après le déploiement de la PR, modifiez temporairement le cluster directement :
 
@@ -127,7 +149,7 @@ correction est automatique ; les commandes `kubectl` ne modifient pas la source
 de vérité. Vérifiez le retour à **Synced**, puis les pods et les réponses du
 Service.
 
-### 6. Revenir à la version 1.0.0 avec Revert
+#### 6. Revenir à la version 1.0.0 avec Revert
 
 Utilisez **Revert** sur la PR fusionnée de mise à jour dans GitHub. GitHub crée
 une nouvelle PR qui annule le changement ; après revue et fusion, le manifeste
@@ -139,7 +161,7 @@ Un revert Git conserve l'historique : il ajoute un changement inverse au lieu
 de réécrire ou supprimer la PR précédente. Cela rend le retour en arrière
 traçable et laisse Argo CD réconcilier le cluster à partir de Git.
 
-### 7. Bonus — supprimer le Service par PR
+#### 7. Bonus — supprimer le Service par PR
 
 Supprimez `apps/taskflow/service.yaml` dans une branche, puis ouvrez et fusionnez
 une PR vers `main`. Avec `prune: true`, Argo CD supprime du cluster la ressource
@@ -186,6 +208,151 @@ ces actions à des personnes précises.
 auditée dans l'historique Git. Il restaure la configuration voulue sans masquer
 la modification initiale ; Argo CD voit le nouvel état de `main` et ramène le
 cluster à cet état.
+
+## Lab de l'après-midi — Blue-Green puis Canary
+
+En binôme (2 h 15), faire évoluer TaskFlow de `1.0.0` vers `1.1.0` avec
+Blue-Green, puis tester Canary jusqu'à `2.0.0`. Le dernier essai vers `2.1.0`
+sert à observer les erreurs HTTP et à décider quand interrompre le rollout.
+Les captures ci-dessous sont celles de cette séance ; elles montrent des étapes
+réalisées, mais ne remplacent pas les PR ni le journal à compléter.
+
+### A. Blue-Green — déployer `1.1.0`
+
+Dans une branche, remplacer le Deployment par le manifeste Blue-Green de
+`exemples/bluegreen/`, puis ouvrir une PR. Après revue et fusion, l'image
+`1.1.0` passe dans l'environnement. Comparer le service actif `taskflow` avec
+`taskflow-preview`, compter les pods, puis promouvoir la preview :
+
+```bash
+kubectl argo rollouts get rollout taskflow -n taskflow
+./scripts/observe.sh taskflow-preview
+./scripts/observe.sh taskflow
+kubectl argo rollouts promote taskflow -n taskflow
+./scripts/observe.sh
+```
+
+Le premier contrôle confirme la version de l'outil Argo Rollouts installé.
+
+![Version installée d'Argo Rollouts](captures/argorollouts-version-installed.png)
+
+Ces deux captures montrent le même état Git avant la PR. La seconde est une
+copie identique conservée parmi les fichiers ajoutés.
+
+![État Git avant la PR Blue-Green](captures/bluegreen-git-status-before-pr.png)
+
+![Copie de l'état Git avant la PR Blue-Green](captures/bluegreen-git-status-duplicate.png)
+
+Le diff remplace l'image `1.0.0` par `1.1.0` dans le manifeste de rollout.
+
+![Diff de l'image Blue-Green vers 1.1.0](captures/bluegreen-image-1.1.0-diff.png)
+
+La PR #23 pour `1.1.0` est encore ouverte dans cette capture : elle prouve la
+proposition du changement, pas sa fusion.
+
+![PR Blue-Green 1.1.0 ouverte](captures/bluegreen-pr-1.1.0-open.png)
+
+Cette capture montre la PR initiale qui active Argo Rollouts en Blue-Green
+(`1.0.0`) fusionnée dans `main`.
+
+![PR de configuration Blue-Green fusionnée](captures/bluegreen-pr-1.0.0-merged.png)
+
+Le commit suivant déclare `1.1.0` dans le rollout Blue-Green.
+
+![Commit de mise à jour Blue-Green vers 1.1.0](captures/bluegreen-image-1.1.0-commit.png)
+
+Le rollout est en pause avec `1.0.0` comme version active et `1.1.0` en
+preview ; les deux groupes de pods permettent de comparer avant promotion.
+
+![Rollout Blue-Green avec preview 1.1.0](captures/bluegreen-rollout-preview-active.png)
+
+L'observation confirme la séparation : les requêtes vers `taskflow-preview`
+retournent `1.1.0`, tandis que le service actif `taskflow` répond encore en
+`1.0.0`. Après promotion, refaire l'observation sur le service actif.
+
+![Observation du service preview et du service actif](captures/bluegreen-observe-preview-vs-active.png)
+
+### B. Canary — progresser jusqu'à `2.0.0`, puis interrompre `2.1.0`
+
+Remplacer le manifeste actif par `exemples/canary/rollout.yaml` et déclarer
+`1.1.0` dans une PR. Ensuite, proposer `2.0.0` par une nouvelle PR. Suivre les
+étapes du rollout et observer à la fois le statut et les réponses HTTP :
+
+```bash
+kubectl argo rollouts get rollout taskflow -n taskflow --watch
+./scripts/observe.sh
+```
+
+Quand les vérifications sont satisfaisantes, promouvoir jusqu'à 100 % :
+
+```bash
+kubectl argo rollouts promote taskflow -n taskflow
+kubectl argo rollouts get rollout taskflow -n taskflow
+./scripts/observe.sh
+```
+
+Le rollout Canary `1.1.0` est alors sain et sert de point de départ stable.
+
+![Rollout Canary stable en version 1.1.0](captures/canary-1.1.0-stable.png)
+
+Le changement de stratégie remplace Blue-Green par les étapes progressives
+Canary, avec des paliers de poids et des pauses.
+
+![Diff du manifeste pour passer de Blue-Green à Canary](captures/canary-strategy-manifest-diff.png)
+
+Cette capture confirme l'état Canary avant le déploiement de la version
+suivante : `1.1.0` est stable et les quatre réplicas sont disponibles.
+
+![Canary 1.1.0 avant la mise à jour](captures/canary-rollout-1.1.0-before-update.png)
+
+Le manifeste Canary définit les étapes de progression du trafic et leurs pauses.
+
+![Étapes déclarées dans le manifeste Canary](captures/canary-rollout-manifest-steps.png)
+
+Les résultats d'observation évoluent de `30/10` à `26/14` réponses entre les
+versions `1.1.0` et `2.0.0` : ils illustrent le déplacement progressif du
+trafic. Ce sont des échantillons de requêtes, pas une mesure exacte du poids
+configuré.
+
+![Réponses observées pendant la progression Canary](captures/canary-traffic-observation.png)
+
+Après promotion, l'état indique `2.0.0` stable à 100 % et le rollout est sain.
+
+![Canary 2.0.0 promu et sain](captures/canary-2.0.0-promoted.png)
+
+Pour l'essai suivant, une branche propose `2.1.0`. La capture d'observation
+montre des réponses `HTTP 500` en plus des réponses `HTTP 200` : ne pas
+promouvoir davantage et interrompre le rollout pour préserver la version stable.
+
+![Observation des erreurs HTTP pendant l'essai de 2.1.0](captures/canary-2.1.0-observation-http-errors.png)
+
+Interrompre la progression avec :
+
+```bash
+kubectl argo rollouts abort taskflow -n taskflow
+./scripts/observe.sh
+kubectl argo rollouts get rollout taskflow -n taskflow
+```
+
+Après l'abort, les 40 requêtes observées répondent à nouveau en `2.0.0`.
+La capture affiche toutefois le rollout en état `Degraded` avec
+`RolloutAborted` : l'application sert la version stable, mais le statut du
+rollout n'est pas déclaré sain par cet abort.
+
+![Après l'abort, le service répond en 2.0.0 et le rollout est marqué interrompu](captures/canary-abort-stable-2.0.0.png)
+
+### Livrable de l'après-midi
+
+Compléter le journal avec les PR, les versions, les observations et la décision
+d'interruption. Argumenter le choix de Blue-Green ou Canary pour TaskFlow en
+fonction du risque accepté et du coût (ressources et complexité opérationnelle).
+
+| Étape | Résultat à consigner |
+| --- | --- |
+| Blue-Green `1.1.0` | PR, comparaison `taskflow` / `taskflow-preview`, nombre de pods, résultat après promotion |
+| Canary `2.0.0` | PR, progression observée, confirmation de la promotion à 100 % |
+| Canary `2.1.0` | PR, codes HTTP, décision et moment de l'abort, version servie après interruption |
+| Choix de stratégie | Blue-Green ou Canary pour TaskFlow, justifié par le risque et le coût |
 
 ## Équipe
 
