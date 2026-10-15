@@ -112,7 +112,7 @@ L'image 2.1.0 est construite avec une configuration qui dégrade le service (`FA
 
 | Action | Responsable | Échéance |
 | --- | --- | --- |
-| Faire tester une vraie route (par exemple `/tasks`) à la `readinessProbe`, ou faire vérifier le service réel par `/health` | à définir | à définir |
-| Lancer le test de charge k6 dans la CI sur l'image, avant la fusion de la PR, pour bloquer une version défaillante avant même le cluster | à définir | à définir |
-| Ajouter une règle conftest qui refuse les variables d'injection de pannes (`FAILURE_RATE`, `LATENCY_MS`) dans les manifests et images de production | à définir | à définir |
-| Ajouter des scénarios k6 sur les autres routes (création, recherche, suppression), pour ne pas tester que `/tasks` en lecture | à définir | à définir |
+| Faire tester une vraie route (par exemple `/tasks`) à la `readinessProbe`, ou faire vérifier le service réel par `/health` | Matteo MENCUCCINI | 16/10/2026 |
+| Lancer le test de charge k6 dans la CI sur l'image, avant la fusion de la PR, pour bloquer une version défaillante avant même le cluster | Sabri ABID | 23/10/2026 |
+| Ajouter une règle conftest qui refuse les variables d'injection de pannes (`FAILURE_RATE`, `LATENCY_MS`) dans les manifests et images de production | Sabri ABID | 23/10/2026 |
+| Ajouter des scénarios k6 sur les autres routes (création, recherche, suppression), pour ne pas tester que `/tasks` en lecture | Matteo MENCUCCINI | 30/10/2026 |
