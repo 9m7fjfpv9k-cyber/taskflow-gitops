@@ -499,6 +499,136 @@ Délai de détection et de réaction : environ 62 secondes entre le début du d�
 Exposition des utilisateurs : environ 1 minute, de la bascule du service canary (09:55:55Z) à son retour (09:56:52Z). D'après le README du dépôt, la part de trafic suit la proportion de pods : environ 25 %, soit 1 pod sur 4. C'est une estimation.
 Détecté par : le test de charge k6, et non une sonde Kubernetes : la sonde de santé n'a rien signalé de grave.
 Résolu par : l'abandon automatique. Git dit toujours 2.1.0,
+kubectl get rs taskflow-df976ccb5 -n taskflow -o 
 
+revert
+![captures/preuve4-2.png](captures/preuve4-2.png)
+annulé la PR #11 (l'image 2.1.0) avec git revert -m 1 f3f70e4. Cela a créé le commit c981645 sur la branche revert/canary-2.1.0-auto.
+Le diff était d'une seule ligne : 2.1.0 remplacé par 2.0.0.
+Après le merge de cette PR, le Rollout est passé de Degraded à Healthy, avec la révision 7 stable en 2.0.0. Cela montre qu'Argo CD a bien repris la correction de Git. Je n'ai pas vu le numéro de cette PR de revert, il est à lire sur GitHub.
+
+4- 
+![captures/B4.png](captures/B4.png)
+Le diff est correct : une seule ligne, 2.0.0 remplacé par 2.2.0. Le suivi que vous avez collé montre l'état d'avant : Healthy, 2.0.0 (stable), Step 7/7, sans rien de nouveau. Rien n'est donc encore parti, c'est normal : il reste à commiter, pousser et fusionner.
+
+Remarque : le --watch réécrit tout l'écran à chaque rafraîchissement, donc un copier-coller répète le même bloc plusieurs fois. Pour me montrer l'état, collez seulement la dernière image, la plus basse.
+![captures/B4-3.png](captures/B4-2.png)
+![captures/B4-3.png](captures/B4-3.png)
+application.argoproj.io/taskflow annotated
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops % ./scripts/observe.sh
+
+     40 version=2.2.0 http=200
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops %
+5-
+![captures/B5.png](captures/B5.png)
+le fichier docs/postmortem-2.1.0.md est créé (67 lignes). Je n'ai fait ni git add, ni commit, ni push, ni PR.
+![analysisrun-2.1.0-echec-2.2.0-succes.png](analysisrun-2.1.0-echec-2.2.0-succes.png)
+git status confirme que seul docs/ s'est ajouté, en plus de vos deux modifications d'avant (.gitignore et application.yaml). J'ai aussi vérifié que les chiffres clés y sont : p95 de 310,32 ms, 27,33 %, les PR #10 à #13 et l'AnalysisRun taskflow-df976ccb5-6-2.
+
+Lab C
+1- La lecture de pssi.md est de p kubernetes.rgo 
+
+La mini-PSSI est un ensemble de 5 règles de sécurité, vérifiées automatiquement sur chaque PR (« quality gates ») : une règle non respectée bloque le merge.
+
+R1 : toute image a un tag explicite, jamais latest.
+R2 : les images viennent uniquement de ghcr.io/9m7fjfpv9k-cyber/.
+R3 : chaque conteneur a une limite de mémoire. À écrire.
+R4 : les pods ne tournent pas en root (runAsNonRoot: true). À écrire.
+R5 : aucune vulnérabilité HIGH ou CRITICAL corrigeable dans les images. Vérifiée par Trivy.
+R1 à R4 sont contrôlées par conftest (règles Rego dans kubernetes.rego), R5 par Trivy.
+install conflest 
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops % conftest --version
+
+Conftest: 0.71.1
+OPA: 1.21.1
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops %
+![captures/C1.png](captures/C1.png)
+
+2-
+Ecriture du R3 et R4
+PSSI-R3 : chaque conteneur doit avoir une limite de mémoire.
+deny contains msg if {
+    some c in conteneurs
+    not c.resources.limits.memory
+    msg := sprintf("PSSI-R3 : le conteneur '%s' n'a pas de limite de mémoire (resources.limits.memory)", [c.name])
+}
+
+PSSI-R4 : le pod doit déclarer runAsNonRoot: true.
+pod_non_root if {
+    input.spec.template.spec.securityContext.runAsNonRoot == true
+}
+
+deny contains msg if {
+    charges_de_travail[input.kind]
+    not pod_non_root
+    msg := sprintf("PSSI-R4 : le pod de '%s' ne déclare pas runAsNonRoot: true", [input.metadata.name])
+}
+!{captures/C2.png}(captures/C2.png)
+La règle R4 fonctionne : elle détecte le manque, et 25 tests, 24 passed, 1 failure est le résultat voulu. R3, elle, passe, puisque votre Rollout a bien
+
+3- 
+Nous avons ajouté sur le fichier rollout.yaml 
+spec:
+      securityContext:
+        runAsNonRoot: true
+      containers:
+    name: taskflow
+
+Pour ajouter runAsNonRoot au pod
+youb.el-handa@P-JDGD7NVG2P taskflow-gitops % conftest test apps/ --policy policies/
+
+
+25 tests, 25 passed, 0 warnings, 0 failures, 0 exceptions
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops %
+![captures/C3.png](captures/C3.png)
+Cette modification change le modèle de pod, donc le Rollout lancera un nouveau déploiement canary,
+![captures/C3-2.png](captures/C3-2.png)
+![captures/C3-3.png](captures/C3-3.png)
+Le contrôle PSSI images (Trivy) est rouge, et la capture dit pourquoi :
+
+L'étape Scanner les images (PSSI-R5) a échoué, en 18 secondes.
+Trivy a scanné ghcr.io/9m7fjfpv9k-cyber/taskflow:2.2.0, puis le job s'est terminé avec exit code 1.
+Dans le pipeline, Trivy est lancé avec --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1. Un code de sortie 1 signifie donc qu'il a trouvé au moins une vulnérabilité HIGH ou CRITICAL pour laquelle un correctif existe dans cette image. La règle R5 est donc violée.
+
+les vulnérabilités sont dans l'image 2.2.0 elle-même, qui existait déjà.
+
+Le détail est dans les lignes repliées de la capture.
+Ce qui est propre. Le système de l'image (Debian 13.7) a 0 vulnérabilité.
+
+Ce qui est rouge. Il y a 9 vulnérabilités, toutes HIGH, aucune CRITICAL, toutes avec un correctif disponible (Status: fixed), dans deux bibliothèques Python :
+
+starlette 0.41.3 : CVE-2025-62727 (corrigée en 0.49.1), CVE-2026-48818 (corrigée en 1.1.0) et CVE-2026-54283 (corrigée en 1.3.1).
+urllib3 1.26.20 : CVE-2025-66418 et CVE-2025-66471 (corrigées en 2.6.0), CVE-2026-21441 (2.6.3), CVE-2026-44431 (2.7.0), CVE-2026-97687 et CVE-2026-97689 (2.8.0).
+Comme ces correctifs existent, la règle R5 les compte, d'où le exit code 1.
+
+4- ![captures/C4.png](captures/C4.png)
+Créer le fichier .trivyignore
+Exceptions PSSI-R5 — image ghcr.io/9m7fjfpv9k-cyber/taskflow:2.2.0
+Ajoutées le 2026-10-15. Correctif disponible, mais il exige de reconstruire
+l'image (hors du périmètre de ce dépôt GitOps). Exploitabilité dans TaskFlow
+non vérifiée : le code applicatif n'est pas dans ce dépôt.
+Exception temporaire : à lever avant l'échéance, en demandant une image
+reconstruite avec starlette >= 1.3.1 et urllib3 >= 2.8.0.
+starlette 0.41.3
+CVE-2025-62727 exp:2026-10-30
+CVE-2026-48818 exp:2026-10-30
+CVE-2026-54283 exp:2026-10-30
+
+urllib3 1.26.20
+CVE-2025-66418 exp:2026-10-30
+CVE-2025-66471 exp:2026-10-30
+CVE-2026-21441 exp:2026-10-30
+CVE-2026-44431 exp:2026-10-30
+CVE-2026-97687 exp:2026-10-30
+CVE-2026-97689 exp:2026-10-30
+securityContext
+![captures/C4-2.png](captures/C4-2.png)
+5- 
+
+Ruleset : rendre obligatoires « PSSI manifests (conftest) » et « PSSI images (Trivy) »
+![captures/C5.png](captures/C5.png)
+6-
+![captures/C6.png](captures/C6.png)
+![captures/C6-2.png](captures/C6-2.png)
 ## Binôme
 Ayoub EL-Handa, Ayoub EL-OMARY
