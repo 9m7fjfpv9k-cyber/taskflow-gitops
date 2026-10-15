@@ -244,11 +244,211 @@ clusteranalysistemplates.argoproj.io   2026-10-14T07:10:46Z
 rollouts.argoproj.io                   2026-10-14T07:10:46Z
 ```
 
-Après la synchronisation de la PR par Argo CD, les nouvelles ressources sont présentes dans le namespace :
-
-<!-- À compléter après la fusion de la PR : coller la sortie de la commande ci-dessous.
-     On doit y voir analysistemplate/robustesse-k6, configmap/k6-robustesse et service/taskflow-canary. -->
+Après la fusion de la PR (#20) et la synchronisation par Argo CD, on retrouve bien les nouvelles ressources dans le namespace : l'AnalysisTemplate `robustesse-k6`, la ConfigMap `k6-robustesse` (le scénario k6) et le service `taskflow-canary`.
 
 ```console
 $ kubectl get analysistemplate,configmap,svc -n taskflow
+NAME                                         AGE
+analysistemplate.argoproj.io/robustesse-k6   17m
+
+NAME                         DATA   AGE
+configmap/k6-robustesse      1      17m
+configmap/kube-root-ca.crt   1      25h
+
+NAME                      TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)   AGE
+service/taskflow          ClusterIP   10.96.200.234   <none>        80/TCP    21h
+service/taskflow-canary   ClusterIP   10.96.180.132   <none>        80/TCP    17m
 ```
+
+### Robustesse : échec de la 2.1.0
+
+On pousse maintenant la 2.1.0 par une PR, en suivant le Rollout avec `kubectl argo rollouts get rollout taskflow -n taskflow --watch`, mais sans toucher à rien : cette fois, c'est l'analyse qui doit décider.
+
+> Remarque : notre première PR (#21) modifiait par erreur `exemples/canary/rollout.yaml` au lieu de `apps/taskflow/rollout.yaml`. Comme Argo CD ne surveille que `apps/taskflow/`, rien ne s'est passé sur le cluster. La bonne PR est la #22.
+
+#### Déroulé
+
+Comme on peut le voir dans les événements du Rollout (`kubectl describe rollout taskflow -n taskflow`), tout s'est enchaîné sans aucune intervention de notre part :
+
+| Heure | Événement |
+| --- | --- |
+| 10:50:34 | Fusion de la PR #22 (image 2.1.0) |
+| 10:50:41 | Argo CD synchronise : passage à 25 %, 1 pod en 2.1.0 et 3 pods en 2.0.0 |
+| 10:50:43 | `taskflow-canary` bascule sur le pod 2.1.0 |
+| 10:51:03 | Fin de la pause de 20 s : lancement de l'AnalysisRun, donc du Job k6 sur `taskflow-canary` |
+| 10:51:40 | Seuils dépassés : AnalysisRun en échec, abort automatique, retour à 4 pods en 2.0.0 |
+
+La 2.1.0 n'a donc été exposée qu'environ une minute, et seulement sur 1 pod sur 4 (environ 25 % du trafic).
+
+![Dashboard Argo Rollouts : AnalysisRun 7-2 en échec sur la 2.1.0](screenshots/analysisrun-2.1.0-echec-resume.png)
+![Dashboard Argo Rollouts : la métrique test-de-charge-k6 compte 1 échec, alors qu'aucun n'est toléré](screenshots/analysisrun-2.1.0-echec-k6.png)
+
+État du Rollout après l'abort :
+
+```console
+$ kubectl argo rollouts get rollout taskflow -n taskflow
+Status:          ✖ Degraded
+Message:         RolloutAborted: Rollout aborted update to revision 7: Step-based analysis phase error/failed: Metric "test-de-charge-k6" assessed Failed due to failed (1) > failureLimit (0)
+Strategy:        Canary
+  Step:          0/7
+  SetWeight:     0
+  ActualWeight:  0
+Images:          ghcr.io/9m7fjfpv9k-cyber/taskflow:2.0.0 (stable)
+
+NAME                                                                 KIND         STATUS        INFO
+⟳ taskflow                                                           Rollout      ✖ Degraded
+├──# revision:7
+│  ├──⧉ taskflow-df976ccb5                                           ReplicaSet   • ScaledDown  canary
+│  └──α taskflow-df976ccb5-7-2                                       AnalysisRun  ✖ Failed      ✖ 1
+│     └──⊞ 23fb84b8-9a34-48ce-809b-94cca62c024f.test-de-charge-k6.1  Job          ✖ Failed
+├──# revision:6
+│  └──⧉ taskflow-c6cf57bd6                                           ReplicaSet   ✔ Healthy     stable
+│     ├──□ taskflow-c6cf57bd6-7ljwv                                  Pod          ✔ Running     ready:1/1
+│     ├──□ taskflow-c6cf57bd6-65hxd                                  Pod          ✔ Running     ready:1/1
+│     ├──□ taskflow-c6cf57bd6-g8t98                                  Pod          ✔ Running     ready:1/1
+│     └──□ taskflow-c6cf57bd6-zpsg4                                  Pod          ✔ Running     ready:1/1
+```
+
+Comme pour l'abort manuel du Canary, le cluster tourne en 2.0.0 alors que le repo demande toujours la 2.1.0 : le Rollout et l'application Argo CD sont donc en Degraded jusqu'au revert de la PR.
+
+#### Ce qu'a mesuré k6
+
+Les logs du Job k6 montrent que les deux seuils sont dépassés :
+
+```console
+$ kubectl logs -n taskflow job/23fb84b8-9a34-48ce-809b-94cca62c024f.test-de-charge-k6.1
+  █ THRESHOLDS
+    http_req_duration
+    ✗ 'p(95)<250' p(95)=313.27ms
+    http_req_failed
+    ✗ 'rate<0.02' rate=27.02%
+...
+    http_req_failed................: 27.02% 80 out of 296
+    http_reqs......................: 296    9.720848/s
+level=error msg="thresholds on metrics 'http_req_duration, http_req_failed' have been crossed"
+```
+
+| Mesure | 2.0.0 (référence) | 2.1.0 (canary) | Seuil |
+| --- | --- | --- | --- |
+| Requêtes en erreur | 0 % (0 sur 730) | 27 % (80 sur 296) | moins de 2 % |
+| Temps de réponse p95 | 8,98 ms | 313 ms | moins de 250 ms |
+
+#### Enquête : pourquoi Kubernetes n'a rien vu ?
+
+Le pod 2.1.0 était pourtant `ready:1/1` pendant tout le test. Pour comprendre, nous avons lancé l'image 2.1.0 en local, hors du cluster :
+
+```console
+$ docker run -d --rm --name t210 -p 8001:8000 ghcr.io/9m7fjfpv9k-cyber/taskflow:2.1.0
+$ curl -s localhost:8001/health
+{"status":"ok","version":"2.1.0","pod":"866cbb37be90"}      # HTTP 200 en 4 ms
+$ for i in $(seq 1 15); do curl -s -o /dev/null -w '%{http_code}\n' localhost:8001/tasks; done | sort | uniq -c
+     10 200
+      5 500                                                  # environ 300 ms par requête
+```
+
+`/health` répond parfaitement, alors que `/tasks` renvoie environ 1 requête sur 3 en erreur 500, avec 300 ms de latence. L'image est construite avec deux variables d'environnement qui injectent ces pannes :
+
+```console
+$ docker image inspect ghcr.io/9m7fjfpv9k-cyber/taskflow:2.1.0 --format '{{range .Config.Env}}{{println .}}{{end}}' | grep -E 'FAILURE|LATENCY'
+FAILURE_RATE=0.3
+LATENCY_MS=300
+```
+
+Et le middleware de l'application qui les applique épargne justement `/health` :
+
+```python
+@app.middleware("http")
+async def inject_faults(request: Request, call_next):
+    """Simule une version défaillante : /health reste sain, les utilisateurs souffrent."""
+    if request.url.path != "/health":
+        ...
+```
+
+Or nos deux probes (`readinessProbe` et `livenessProbe`) ne testent que `/health`. Pour Kubernetes, le pod était donc parfaitement sain, alors que les utilisateurs recevaient des erreurs. C'est exactement ce que l'analyse k6 rattrape : elle teste une vraie route (`/tasks`), sous charge, comme un utilisateur.
+
+#### Revert de la PR 2.1.0
+
+Pour remettre le repo en accord avec le cluster, nous avons fait un revert de la PR #22 (PR #23, fusionnée à 10:58:55).
+
+Comme le cluster tournait déjà en 2.0.0, il n'y a eu aucun redéploiement : Argo Rollouts reconnaît que la version demandée est celle des pods stables déjà en place, et se contente de repasser en Healthy (événement `Rollback to stable ReplicaSets` à 10:59:26). Les pods 2.0.0 sont restés les mêmes, seule la révision change de numéro (la 6 devient la 8).
+
+### Robustesse : succès de la 2.2.0
+
+On refait exactement la même chose avec la 2.2.0 (PR #24), toujours avec le `--watch` et toujours sans toucher à rien.
+
+#### Déroulé
+
+Cette fois, l'analyse passe, et le Rollout va jusqu'au bout tout seul :
+
+| Heure | Événement |
+| --- | --- |
+| 11:03:00 | Fusion de la PR #24 (image 2.2.0) |
+| 11:03:23 | Argo CD synchronise : passage à 25 %, 1 pod en 2.2.0 et 3 pods en 2.0.0 |
+| 11:03:49 | Fin de la pause de 20 s : lancement de l'AnalysisRun (Job k6 sur `taskflow-canary`) |
+| 11:04:26 | Seuils respectés : AnalysisRun en succès, passage à 50 % |
+| 11:05:01 | Passage à 75 % après la pause de 30 s |
+| 11:05:37 | Passage à 100 % : 4 pods en 2.2.0, la 2.0.0 n'a plus de pods |
+
+Le déploiement complet a pris moins de 3 minutes après la fusion de la PR, sans aucun promote manuel.
+
+![Dashboard Argo Rollouts : AnalysisRun 9-2 réussie sur la 2.2.0](screenshots/analysisrun-2.2.0-succes-resume.png)
+![Dashboard Argo Rollouts : la métrique test-de-charge-k6 compte 1 succès et aucun échec](screenshots/analysisrun-2.2.0-succes-k6.png)
+
+Résultat :
+
+![Dashboard Argo Rollouts : révision 9 (2.2.0) stable avec 4 pods, révision 8 (2.0.0) sans pods](screenshots/rollout-2.2.0-100.png)
+
+```console
+$ kubectl argo rollouts get rollout taskflow -n taskflow
+Status:          ✔ Healthy
+Strategy:        Canary
+  Step:          7/7
+  SetWeight:     100
+  ActualWeight:  100
+Images:          ghcr.io/9m7fjfpv9k-cyber/taskflow:2.2.0 (stable)
+
+NAME                                                                 KIND         STATUS        INFO
+⟳ taskflow                                                           Rollout      ✔ Healthy
+├──# revision:9
+│  ├──⧉ taskflow-7ddd57d788                                          ReplicaSet   ✔ Healthy     stable
+│  │  ├──□ taskflow-7ddd57d788-jk2fw                                 Pod          ✔ Running     ready:1/1
+│  │  ├──□ taskflow-7ddd57d788-zkxqh                                 Pod          ✔ Running     ready:1/1
+│  │  ├──□ taskflow-7ddd57d788-7974x                                 Pod          ✔ Running     ready:1/1
+│  │  └──□ taskflow-7ddd57d788-m8xd9                                 Pod          ✔ Running     ready:1/1
+│  └──α taskflow-7ddd57d788-9-2                                      AnalysisRun  ✔ Successful  ✔ 1
+│     └──⊞ d1099338-c89e-4ba9-ba5f-91a9240a2d1c.test-de-charge-k6.1  Job          ✔ Successful
+├──# revision:8
+│  └──⧉ taskflow-c6cf57bd6                                           ReplicaSet   • ScaledDown
+├──# revision:7
+│  ├──⧉ taskflow-df976ccb5                                           ReplicaSet   • ScaledDown
+│  └──α taskflow-df976ccb5-7-2                                       AnalysisRun  ✖ Failed      ✖ 1
+│     └──⊞ 23fb84b8-9a34-48ce-809b-94cca62c024f.test-de-charge-k6.1  Job          ✖ Failed
+```
+
+On voit bien l'historique des deux tentatives : la révision 7 (2.1.0) avec son analyse en échec, et la révision 9 (2.2.0) avec son analyse réussie.
+
+#### Ce qu'a mesuré k6
+
+```console
+$ kubectl logs -n taskflow job/d1099338-c89e-4ba9-ba5f-91a9240a2d1c.test-de-charge-k6.1
+  █ THRESHOLDS
+    http_req_duration
+    ✓ 'p(95)<250' p(95)=10.85ms
+    http_req_failed
+    ✓ 'rate<0.02' rate=0.00%
+...
+    http_req_failed................: 0.00%  0 out of 727
+    http_reqs......................: 727    24.116727/s
+```
+
+| Mesure | 2.0.0 (référence) | 2.1.0 (échec) | 2.2.0 (succès) | Seuil |
+| --- | --- | --- | --- | --- |
+| Requêtes en erreur | 0 % (0 sur 730) | 27 % (80 sur 296) | 0 % (0 sur 727) | moins de 2 % |
+| Temps de réponse p95 | 8,98 ms | 313 ms | 10,85 ms | moins de 250 ms |
+
+La 2.2.0 se comporte comme notre référence : aucune erreur et un p95 du même ordre (environ 11 ms contre 9 ms). L'analyse a donc laissé passer la bonne version et bloqué la mauvaise, sans qu'on ait besoin d'intervenir.
+
+### Postmortem de la 2.1.0
+
+L'incident de la 2.1.0 est analysé dans [docs/postmortem-2.1.0.md](docs/postmortem-2.1.0.md) : chronologie, les 4 preuves, la cause racine (pourquoi les probes n'ont rien vu) et les actions correctives.
+
