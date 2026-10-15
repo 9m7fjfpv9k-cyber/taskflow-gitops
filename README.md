@@ -354,7 +354,151 @@ fonction du risque accepté et du coût (ressources et complexité opérationnel
 | Canary `2.1.0` | PR, codes HTTP, décision et moment de l'abort, version servie après interruption |
 | Choix de stratégie | Blue-Green ou Canary pour TaskFlow, justifié par le risque et le coût |
 
-## Équipe
+J3- Lab du main
+2.0.0 → 2.1.0 → abort automatique → 2.2.0
 
-<!-- Noms du binôme -->
-- À compléter
+1/revert the vertion from  2.1.0. -> 2.0.0
+./scripts/observe.sh
+![captures/A1.png](captures/A1.png)
+
+2/ 2///
+A.
+Le script termine par Résultat : seuils respectés.
+
+Pour comprendre ces valeurs :
+
+0 erreur sur 735 requêtes : toutes les requêtes ont reçu un 200, ce que confirme ✓ statut 200 et checks_failed: 0.00%.
+p95 = 5,77 ms : 95 % des réponses sont arrivées en moins de 5,77 millisecondes, soit environ 40 fois sous le seuil de 250 ms. Les autres valeurs vont dans le même sens : moyenne 3,64 ms, médiane 3,56 ms, maximum 7,64 ms.
+735 requêtes en 30 s, soit environ 24 requêtes par seconde, avec 5 utilisateurs virtuels. C'est une charge légère, qui ne met pas l'application en difficulté.
+
+resulta final :
+
+./scripts/charge.sh http://taskflow/ sur la version stable 2.0.0 : erreurs = 0,00 % (0/735), p95 = 5,77 ms. Seuils respectés (erreurs < 2 %, p95 < 250 ms).
+
+3- la PR et la synchronisation
+![captures/analyse-auto.png](captures/analyse-auto.png)
+Status: ✔ Healthy, Strategy: Canary, Step: 7/7 et l'image 2.0.0 (stable), comme à ma dernière vérification.
+(captures/get-rollout.png)
+
+4/ Tout est vérifié et conforme :
+
+Git : apps/taskflow contient un Rollout, un AnalysisTemplate, une ConfigMap et deux services, et aucun Deployment.
+Cluster : les 8 CRD Argo sont installées, et le namespace taskflow contient robustesse-k6, k6-robustesse, taskflow et taskflow-canary.
+Conclusion : ce qui est décrit dans Git est exactement ce qui tourne dans le cluster.
+![capture/get-crd](captures/get-crd.png)
+
+B.
+1- kubectl argo rollouts get rollout taskflow -n taskflow --watch
+Ce qui s'est passé, dans l'ordre
+Votre PR a changé l'image en 2.1.0, et Argo CD l'a appliquée.
+Argo Rollouts a démarré 1 pod 2.1.0 (25 %), puis a attendu 20 s.
+Il a lancé le test k6 sur taskflow-canary, qui ne vise que ce pod.
+Les seuils ont été dépassés, le Job a échoué, et Argo Rollouts a abandonné le déploiement sans votre intervention.
+Les utilisateurs n'ont été exposés qu'au canary, pendant environ une minute. Hier, c'est vous qui aviez repéré les 500 et tapé abort.
+Git dit toujours 2.1.0, comme hier : le Rollout reste Degraded tant qu'une PR ne remet pas 2.0.0.
+![captures/B1.png](captures/B1.png)
+
+2-
+Preuve 1 :
+kubectl argo rollouts get rollout taskflow -n taskflow
+
+la révision est : Deux remarques :
+
+Cette sortie ne dit pas quelle image portait la révision 6. Elle n'affiche que la stable (2.0.0). C'est pourquoi je vous ai donné la commande kubectl get rs taskflow-df976ccb5 ... : sa réponse prouve que l'image fautive est la 2.1.0. Faites-la pour compléter la preuve 1.
+Les restarts:2 sur trois pods viennent de l'arrêt du cluster hier, sans rapport avec l'incident. Le pod taskflow-c6cf57bd6-tlvs9 (11 min) est celui qui a été relancé pour remettre 4 pods stables après l'abandon.
+![captures/preuve1.png](captures/preuve1.png)
+pour voir la version voisi la commande qui complète la preuve 1
+
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops % kubectl get rs taskflow-df976ccb5 -n taskflow -o jsonpath='{.spec.template.spec.containers[0].image}{"\n"}'
+
+ghcr.io/9m7fjfpv9k-cyber/taskflow:2.1.0
+ayoub.el-handa@P-JDGD7NVG2P taskflow-gitops %
+
+Preuve 2 :
+Le nom taskflow-df976ccb5-6-2 veut dire : le Rollout taskflow, la nouvelle version df976ccb5, la révision 6, l'étape 2.
+step-index=2 désigne la 3ᵉ étape du Rollout en comptant depuis 0 : l'étape 0 est setWeight: 25, l'étape 1 la pause de 20 s, l'étape 2 l'analyse.
+Elle appartient au Rollout, qui l'a lancée lui-même.
+Ce qui devait être exécuté (Spec)
+
+La cible est http://taskflow-canary/ : seulement les pods de la nouvelle version, jamais la production.
+La mesure est un Job Kubernetes qui lance k6 avec le script de votre ConfigMap k6-robustesse.
+Backoff Limit: 0 : pas de deuxième essai si le Job échoue.
+{{args.cible}} reste écrit tel quel dans la sortie : c'est la forme modèle, remplacée à l'exécution par la valeur de Args.
+Le résultat (Status)
+
+Phase: Failed : l'analyse est en échec.
+Le message dit assessed Failed due to failed (1) > failureLimit (0) : un échec constaté alors que zéro était toléré. C'est ce qui a déclenché l'abandon.
+Début à 09:56:15Z et fin à 09:56:52Z : 37 secondes.
+Count 1, Failed 1 : une seule mesure a été faite, et elle a échoué.
+Le nom du Job k6 est 6cd4697c-...test-de-charge-k6.1. On s'en sert pour la preuve 3.
+Les événements (Events)
+
+MetricFailed, puis AnalysisRunFailed : d'abord la métrique est jugée en échec, puis l'analyse entière.
+
+Ce qui a échoué : la métrique test-de-charge-k6, sur la révision 6.
+Cette preuve ne dit pas pourquoi : erreurs ou lenteur, c'est dans les logs du Job, donc la preuve 3.
+![captures/preuve2.png](captures/preuve2.png)
+
+Preuve 3 :
+Voici la preuve 3 expliquée, sans tableau. C'est le même test que votre charge.sh, avec les mêmes réglages, donc les chiffres sont directement comparables.
+
+Le test
+
+script: /scripts/robustesse.js, 5 utilisateurs virtuels pendant 30 secondes : c'est le script de la ConfigMap k6-robustesse.
+Les lignes running (0m01.0s) ... ne sont que la barre de progression. Vous pouvez les ignorer.
+Le verdict : bloc THRESHOLDS
+
+✗ 'p(95)<250' p(95)=310.32ms : le p95 est de 310 ms, pour un seuil de 250 ms.
+✗ 'rate<0.02' rate=27.33% : 27,33 % de requêtes en échec, pour un seuil de 2 %.
+Les deux seuils sont dépassés, ce qui est plus grave qu'un seul.
+Les résultats : TOTAL RESULTS
+
+checks_total: 300 : 300 requêtes au total.
+218 out of 300 ont reçu un 200, et 82 ont échoué, soit 27,33 %.
+http_req_failed: 27.33% 82 out of 300 donne la même information.
+La latence : http_req_duration
+
+Moyenne 305 ms, minimum 300,74 ms, médiane 304,94 ms, maximum 316,57 ms.
+Toutes les valeurs sont regroupées autour de 300 ms. On dirait un délai fixe d'environ 300 ms sur chaque requête : c'est une déduction à partir des chiffres, pas une cause lue dans le code.
+La ligne { expected_response:true } ne concerne que les réponses réussies : elles prennent aussi environ 306 ms. La lenteur touche donc les réponses réussies comme les autres, pas seulement celles en erreur.
+Le débit : http_reqs et iteration_duration
+![captures/preuve3.png](captures/preuve3.png)
+300 requêtes en 30 s, soit environ 9,9 par seconde.
+Chaque itération dure en moyenne 506 ms : environ 300 ms de requête plus 200 ms de pause dans le script. Cela confirme la lenteur.
+La dernière ligne
+
+time="2026-10-15T09:56:46Z" level=error msg="thresholds on metrics 'http_req_duration, http_req_failed' have been crossed" indique que k6 a terminé en erreur parce que les seuils ont été dépassés, à 09:56:46Z.
+Le Job est alors devenu Failed, et l'AnalysisRun s'est terminé en échec à 09:56:52Z, quelques secondes plus tard. La chaîne cause-effet est complète.
+Comparaison avec votre référence de la 2.0.0
+
+Erreurs : 0,00 % contre 27,33 %.
+p95 : 5,77 ms contre 310,32 ms.
+Requêtes en 30 s : 735 contre 300, parce que chaque requête prenait 300 ms au lieu de 4 ms.
+À noter pour le postmortem
+
+Les deux seuils dépassés : p95 = 310,32 ms et erreurs = 27,33 % (82 sur 300).
+Une latence d'environ 300 ms sur chaque requête.
+Le test se termine à 09:56:46Z, et l'analyse est déclarée en échec à 09:56:52Z.
+Cette preuve montre ce qui est cassé, pas la cause dans le code de la 2.1.0 : elle n'est pas visible ici.
+
+Preuve 4 :
+La chronologie de l'incident
+09:55:50Z, le déploiement démarre. RolloutUpdated, SuccessfulCreate du ReplicaSet taskflow-df976ccb5, et le pod taskflow-df976ccb5-n689l est créé et démarré. Un pod stable est retiré (Killing taskflow-c6cf57bd6-ft4wv) pour laisser sa place : 3 pods stables et 1 canary. Le Unhealthy à cette heure correspond très probablement à la sonde de démarrage du nouveau pod, un bruit normal ; je n'ai pas lu son message complet.
+09:55:55Z, palier à 25 %. SwitchService : le service taskflow-canary est basculé vers le nouveau pod. RolloutStepCompleted (étape 1) puis RolloutPaused.
+09:56:15Z, début du test. RolloutResumed et RolloutStepCompleted (la pause de 20 s est écoulée, 20 s après 09:55:55 : c'est cohérent). AnalysisRunRunning : l'analyse démarre. Le Job k6 est créé, et son pod est créé, tiré et démarré.
+09:56:48Z, le test échoue. BackoffLimitExceeded sur le Job : k6 a terminé en erreur (le log disait 09:56:46Z) et n'a droit à aucun nouvel essai.
+09:56:52Z, la réaction. C'est un bloc d'événements simultanés :
+MetricFailed, puis AnalysisRunFailed (sur l'AnalysisRun et sur le Rollout) ;
+RolloutAborted ;
+SwitchService : le service canary revient vers les pods stables ;
+Killing et SuccessfulDelete du pod n689l (la 2.1.0 est supprimée) ;
+SuccessfulCreate du pod stable taskflow-c6cf57bd6-tlvs9, qui remet les pods stables à 4, avec ses Created, Started et un Unhealthy de démarrage.
+Ce qu'on en tire
+![captures/preuve4.png](captures/preuve4.png)
+Délai de détection et de réaction : environ 62 secondes entre le début du déploiement (09:55:50Z) et l'abandon (09:56:52Z), sans qu'un humain intervienne.
+Exposition des utilisateurs : environ 1 minute, de la bascule du service canary (09:55:55Z) à son retour (09:56:52Z). D'après le README du dépôt, la part de trafic suit la proportion de pods : environ 25 %, soit 1 pod sur 4. C'est une estimation.
+Détecté par : le test de charge k6, et non une sonde Kubernetes : la sonde de santé n'a rien signalé de grave.
+Résolu par : l'abandon automatique. Git dit toujours 2.1.0,
+
+## Binôme
+Ayoub EL-Handa, Ayoub EL-OMARY
