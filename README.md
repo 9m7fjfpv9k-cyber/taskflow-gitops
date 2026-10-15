@@ -448,4 +448,7 @@ $ kubectl logs -n taskflow job/d1099338-c89e-4ba9-ba5f-91a9240a2d1c.test-de-char
 
 La 2.2.0 se comporte comme notre référence : aucune erreur et un p95 du même ordre (environ 11 ms contre 9 ms). L'analyse a donc laissé passer la bonne version et bloqué la mauvaise, sans qu'on ait besoin d'intervenir.
 
-<!-- À venir : postmortem dans docs/postmortem-2.1.0.md -->
+### Postmortem de la 2.1.0
+
+L'incident de la 2.1.0 est analysé dans [docs/postmortem-2.1.0.md](docs/postmortem-2.1.0.md) : chronologie, les 4 preuves, la cause racine (pourquoi les probes n'ont rien vu) et les actions correctives.
+
