@@ -184,3 +184,71 @@ Deux nuances :
 
 - **Coût du Blue-Green** : pendant le déploiement, les deux versions tournent en entier côte à côte, ce qui double les ressources nécessaires (8 pods au lieu de 4 dans notre cas).
 - **Précision du Canary** : ici, la répartition du trafic se fait au nombre de pods (25 % = 1 pod sur 4), donc elle reste approximative. Pour piloter finement le pourcentage de trafic, indépendamment du nombre de pods, il faut ajouter un ingress ou un service mesh, ce qui complique la mise en place.
+
+### Robustesse : analyse automatique du Canary
+
+#### Mesure de référence
+
+Avant de toucher au déploiement, nous mesurons la robustesse de la production actuelle (2.0.0) avec le même test de charge k6 que celui de l'analyse automatique : 5 utilisateurs virtuels pendant 30 s sur le service `taskflow`.
+
+```console
+$ ./scripts/charge.sh http://taskflow
+  █ THRESHOLDS
+    http_req_duration
+    ✓ 'p(95)<250' p(95)=8.98ms
+    http_req_failed
+    ✓ 'rate<0.02' rate=0.00%
+...
+    http_reqs......................: 730    24.171578/s
+Résultat : seuils respectés.
+```
+
+| Mesure en 2.0.0 | Valeur | Seuil de l'analyse |
+| --- | --- | --- |
+| Requêtes en erreur | 0 % (0 sur 730) | moins de 2 % |
+| Temps de réponse p95 | 8,98 ms | moins de 250 ms |
+
+La 2.0.0 respecte largement les deux seuils : c'est notre référence pour juger les prochaines versions.
+
+#### Mise en place de l'analyse automatique
+
+Nous étions déjà sur un Rollout Canary (il n'y avait donc plus de `deployment.yaml` à supprimer). Dans la PR `feat/analyse-auto`, nous avons remplacé ce Rollout par celui de `exemples/robustesse/` et ajouté les fichiers qui l'accompagnent dans `apps/taskflow/` :
+
+| Fichier | Rôle |
+| --- | --- |
+| `rollout.yaml` | Canary qui lance l'analyse au palier de 25 % |
+| `analysis-template.yaml` | AnalysisTemplate `robustesse-k6` : un Job k6, réussi = on continue, en échec = abort |
+| `configmap-k6.yaml` | Le scénario k6 et ses seuils (moins de 2 % d'erreurs, p95 sous 250 ms) |
+| `service-canary.yaml` | Service `taskflow-canary`, qui ne vise que les pods de la nouvelle version |
+
+Le dossier `apps/taskflow/` contient donc un seul Rollout et aucun Deployment. L'image reste en 2.0.0 : la PR change la stratégie, pas la version, donc sa synchronisation ne déclenche pas de déploiement.
+
+Le nouveau déroulé d'une mise à jour devient :
+
+1. passage à 25 % (1 pod sur 4 en nouvelle version) ;
+2. pause de 20 s, le temps que `taskflow-canary` vise le nouveau pod ;
+3. test de charge k6 sur `taskflow-canary` seulement : s'il échoue, Argo Rollouts fait l'abort tout seul ;
+4. sinon, 50 % puis 75 % (pauses de 30 s), puis 100 %.
+
+Plus besoin de promote manuel : c'est le test de charge qui décide.
+
+#### Vérifications
+
+Les CRD d'Argo Rollouts nécessaires à l'analyse sont bien installées :
+
+```console
+$ kubectl get crd | grep -E 'rollouts|analysis'
+analysisruns.argoproj.io               2026-10-14T07:10:45Z
+analysistemplates.argoproj.io          2026-10-14T07:10:45Z
+clusteranalysistemplates.argoproj.io   2026-10-14T07:10:46Z
+rollouts.argoproj.io                   2026-10-14T07:10:46Z
+```
+
+Après la synchronisation de la PR par Argo CD, les nouvelles ressources sont présentes dans le namespace :
+
+<!-- À compléter après la fusion de la PR : coller la sortie de la commande ci-dessous.
+     On doit y voir analysistemplate/robustesse-k6, configmap/k6-robustesse et service/taskflow-canary. -->
+
+```console
+$ kubectl get analysistemplate,configmap,svc -n taskflow
+```
